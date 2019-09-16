@@ -1,0 +1,246 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<title>神輿なう</title>
+<meta name="viewport" content="width=device-width">
+<link rel="apple-touch-icon" href="omikoshi-icon.png"/>
+<meta property="og:image" content="omikoshi-icon.png">
+<script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+<script src="https://maps.google.com/maps/api/js?key=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"></script>
+<script>"use strict"
+
+var POI = [
+	[ "スタート 9:00", 35.536, 136.278, "text_start.png" ],
+	[ "休憩 9:40", 35.537, 136.279, "kokage_tree_necchusyou.png", ],
+	[ "休憩 10:10", 35.538, 136.280, "kokage_tree_necchusyou.png", ],
+	[ "ゴール 11:00", 35.539, 136.281, "text_goal.png" ],
+]
+
+const START_DT = Date.parse("Sun Sep 15 2019 09:00:00 GMT+0900")
+const END_DT = Date.parse("Sun Sep 15 2019 11:00:00 GMT+0900")
+const API_TOKEN = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+window.onload = function() {
+	var map = new google.maps.Map(document.getElementById("map"), {
+		zoom: 16, // 大きいほど拡大される
+		mapTypeId: "roadmap" // "satellite" or "roadmap",
+	})
+	
+	var ICON_BUS = "omikoshi.png";
+	
+	var bounds = new google.maps.LatLngBounds();
+	for (var i = 0; i < POI.length; i++) {
+		var bs = POI[i]
+		var ll = new google.maps.LatLng(bs[1], bs[2])
+		var marker = new google.maps.Marker({
+			position: ll,
+			icon: bs[3],
+			map: map
+		})
+		marker.data = bs
+		google.maps.event.addListener(marker, "click", function(e) {
+			text.innerHTML = this.data[0]
+		})
+		bounds.extend(ll)
+	}
+	map.fitBounds(bounds)
+	
+	// GPS
+	const ddmm2deg = function(m1, m2) {
+    m1 = parseInt(m1)
+    m2 = parseInt(m2)
+		return Math.floor(m1 / 100) + (m1 % 100 + m2 / 10000) / 60
+	}
+	const parsePosData = function(data, f) {
+		const type = data.type;
+		if (type == "b") {  // value: 34120f000e001111 (8byte binary)
+      var d2 = data.value;
+      var ar = [];
+			for (var j = 0; j < 4; j++) {
+				var val = parseInt(d2.substr(j * 4 + 2, 2), 16) << 8
+				val += parseInt(d2.substr(j * 4, 2), 16)
+				ar.push(val)
+      }
+      const lat = ddmm2deg(ar[0], ar[1])
+      const lng = ddmm2deg(ar[2], ar[3])
+      if (!f)
+        f = setIcon
+      f(data.module, new Date(Date.parse(data.datetime)), lat, lng)
+		}
+	}
+	
+  let cursor = null
+  // 5秒置き通信、2時間で293点
+  const size = 1000
+	let getdt = START_DT
+	const tf = async function() {
+    let url = "https://api.sakura.io/datastore/v1/channels?token=" + API_TOKEN
+    url += "&size=" + size
+    url += "&after=" + new Date(getdt).toISOString() // 2019-09-14T09:00:00"
+    if (END_DT) {
+      url += "&before=" + new Date(END_DT).toISOString() // 2019-09-14T09:00:00"
+    }
+    url += "&order=desc"
+    /*
+    if (cursor) {
+      url += "&cursor=" + cursor
+    }
+    */
+    console.log(url)
+    const data = (await axios.get(url)).data
+    cursor = data.meta.cursor
+    console.log(data)
+    const res = data.results
+    for (let i = res.length - 1; i >= 0; i--) {
+      const d = res[i]
+      const id = parseInt(d.id.substring(0, d.id.length - 2))
+      const dt = Date.parse(d.datetime)
+      if (dt > getdt)
+        getdt = dt + 1
+      parsePosData(d, setCircleAndIcon)
+    }
+  }
+  tf()
+  //setInterval(tf, 5000) // リアルタイム更新
+	
+	// アイコン置く
+	
+	var icons = {};
+	var setIcon = function(id, date, lat, lng) {
+		const ll = new google.maps.LatLng(lat, lng);
+		var icon = icons[id];
+		if (icon == null) {
+			var size = 64;
+			icon = new google.maps.Marker({
+				position: ll,
+				icon: {
+					url: ICON_BUS,
+					scaledSize: new google.maps.Size(size, size)
+				},
+				map: map,
+			});
+			icons[id] = icon;
+		} else {
+			icon.setPosition(ll);
+		}
+//		console.log(id);
+//		dump(ar);
+		icon.data = { date: date } // { v: ar[7], time: Math.floor((ar[1] % 100 + 9) % 24) + ":" + fixnum(Math.floor(ar[2] / 100), 2) + ":" + fixnum(ar[2] % 100, 2) }; // , t: list[i + 10] / 100, h: list[i + 11] / 100 };
+		icon.lastUpdate = new Date().getTime() // 自動消去用
+		google.maps.event.addListener(icon, "click", function(e) {
+      text.innerHTML = "日時：" + this.data.date
+      /*
+			var st = " [" + this.data.time + "現在]";
+			if (this.data.v == 0) {
+				text.innerHTML = "そのバスは、停車中です" + st;
+			} else {
+				text.innerHTML = "そのバスは、速度 " + Math.floor(parseInt(this.data.v) * 1.852) + "km/h で走行中です" + st; // 温度: " + this.data.t + "度 湿度:" + this.data.h + "%";
+      }
+      */
+		});
+		map.setCenter(ll);
+	};
+
+	// 軌跡描く
+	const setCircle = function(id, date, lat, lng) {
+//		dump(ar);
+		var ll = new google.maps.LatLng(lat, lng);
+		const circle = new google.maps.Circle({
+			center: ll,
+			strokeWeight: 0,
+//			fillColor: '#22ee11',
+			fillColor: '#ee8811',
+			fillOpacity: 0.6,
+//			radius: 10,
+			radius: 4,
+			map: map,
+    })
+    circle.data = { date: date }
+		google.maps.event.addListener(circle, "click", function(e) {
+      text.innerHTML = "日時：" + this.data.date
+		})
+	};
+	var setCircleAndIcon = function(id, date, lat, lng) {
+    setCircle(id, date, lat, lng)
+    setIcon(id, date, lat, lng)
+	}
+	
+	// 自動消去
+	const LIFE_TIME = 5 * 60 * 60 * 1000 // 5時間
+	setInterval(function() {
+		var t = new Date().getTime();
+		for (var id in icons) {
+			var icon = icons[id];
+			var dt = t - icon.lastUpdate;
+//			console.log("dt" + dt);
+			if (dt > LIFE_TIME) {
+				icon.setMap(null);
+				delete icons[id];
+			}
+		}
+	}, 60 * 1000) // 1分置き
+}
+</script>
+<style>
+body {
+	font-family: sans-serif;
+	margin: 0px;
+}
+h1 {
+	text-align: center;
+	padding: 0.1em;
+	margin: 0;
+	font-size: 5vw;
+	background-color: #f0a32f;
+	color: #fff;
+}
+#map {
+	width: 100%;
+	height: 500px;
+}
+#text {
+	background-color: #f0f0f0;
+	min-height: 1.4em;
+	padding: 0.5em;
+}
+#desc {
+	margin: 0.5em;
+}
+#src {
+	margin: 1em 0.5em;
+}
+a {
+	color: gray !important;
+}
+table {
+	width: 100%;
+}
+#stat {
+	margin: 1em 0px;
+}
+#grstable {
+	width: 100%;
+	overflow: scroll;
+}
+#qrcode {
+	text-align: center;
+}
+</style>
+</head>
+<body>
+
+<h1>神輿なう</h1>
+<div id="text"></div>
+<div id="map"></div>
+<div id="desc">お神輿の場所をリアルタイムに表示します。<br>
+</div>
+
+<div id="src">
+APP: CC BY <a href=https://fukuno.jig.jp/2611>IchigoJam x sakura.io いちごロケ - 福野泰介の一日一創</a><br>
+BaseApp: CC BY <a href=https://fukuno.jig.jp/2241>福井国体シャトルバスどこ？ / 永平寺町</a><br>
+アイコン: <a href=https://www.irasutoya.com>いらすとや</a><br>
+Map: <a href=https://www.google.co.jp/maps/?hl=ja>Googleマップ</a><br>
+</div>
+
+<img id=qrcode><script>addEventListener("load", () => qrcode.src = "http://chart.apis.google.com/chart?chs=140x140&cht=qr&chl=" + encodeURIComponent(document.location))</script><br>
+
+</body>
+</html>
